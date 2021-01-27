@@ -1,0 +1,6 @@
+[book]
+authors = ["ruster-cn"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Kubernetes 庖丁解牛"
