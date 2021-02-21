@@ -1,7 +1,7 @@
 # kubernetes庖丁解牛：kubelet篇 - Topolopy Manager 
 
 > 摘要：越来越多的系统利用 CPU 和硬件加速器的组合来支持对延迟要求较高的任务和高吞吐量的并行计算。为了获得最佳性能，需要进行与 CPU 隔离、内存和设备局部性有关的优化。
-> 但在引入拓扑管理器之前，kubelet 中的 cpu manager 和 device manager 相互独立地做出资源分配决策。 这可能会导致在多处理系统上出现并非期望的资源分配；由于这些与期望相左的分配，对性能或延迟敏感的应用将受到影响。这里的不符合期望意指，例如， CPU 和设备是从不同的 NUMA 节点分配的，因此会导致额外的延迟。因为在不同的 numa node 下的 pci 设备进行内存读写时速度与响应时间存在差异，相同的 numa node 节点下的设备与内存的读写效果会更好。
+> 但在引入拓扑管理器之前，kubelet 中的 cpu manager 和 device manager 相互独立地做出资源分配决策。 这可能会导致在多处理器系统上出现并非期望的资源分配；由于这些与期望相左的分配，对性能或延迟敏感的应用将受到影响。这里的不符合期望意指： CPU 和设备是从不同的 NUMA 节点分配的，由此会导致额外的延迟。因为在不同的 numa node 下的 pci 设备进行内存读写时速度与响应时间会存在差异，相同的 numa node 节点下的设备与内存的读写效果会更好。文章使用代码：kubernetes branch release-1.20。
 
 
 ## 如何查看机器的拓扑结构
@@ -21,7 +21,7 @@ lstopo tp.png
 
 Topology Manager 是从kubernetes 1.16 版本开始引入，在1.18版本之后默认开启的。因此如果使用的1.16和1.17 版本需要通过kubelet的特性开关设置TopologyManager=true,启动Topolog Manager功能。
 
-Topology Manager 目前提供四种拓扑对齐策略：
+Topology Manager 目前提供四种拓扑对齐策略，可通过参数--topology-manager-policy指定：
 
 * none: 默认策略，不执行任何拓扑对齐。
 * best-effort: 尽最大努力，分配到首选numa节点上，如果没有合适的，也会同意pod加入
@@ -64,8 +64,8 @@ kubelet在sync pod的时候发现pod是新增的，就会进入pod 的准入检�
 
 Topology Manager除了提供以上5个方法外，Topology Manager 还提供了两个接口的实现:Container Scope Topology Manager 和 Pod Scope Topology Manager。两个实现使用哪个，主要由kubelet启动时参数--topology-manager-scope决定:
 
-* Container Scope Topology Manager: 在获取CPU Manager和Device Manager的hints时，会提供 pod 和 container信息，因而两者返回的也是contaienr的hints信息。
-* Pod Scope Topology Manager: 在获取CPU Manager和Device Manager的hints时，只会提供信息，因而两者会将pod内所有container的cpu set 或者 device 组合到一起再返回。
+* Container Scope Topology Manager: 在获取CPU Manager和Device Manager的hints时，只会提供 pod 和 container信息，因而Container Scope计算的是单contaienr的拓扑对齐信息。
+* Pod Scope Topology Manager: 在获取CPU Manager和Device Manager的hints时，只会提供信息，因而Pod Scope会将pod内所有container的cpu set 或者 device 组合到一起然后计算拓扑对齐信息，这样在多container的pod中，多个容器可以分配到同一个numa节点上。
 
 
 ## 关键代码解析
@@ -173,15 +173,6 @@ type bitMask uint64
 
 * TopologyHint
 
-TopologyHint 用来表示容器的numa节点亲和性：
-
-* NUMANodeAffinity: 存储numa节点亲和度，是一个bitmask类型。其含义表示容器更倾向于运行在哪个numa节点上。比如在一个还有2个numa节点的机器上。NUMANodeAffinity共有三种表示方法：
-  * 01: 表示容器对节点0亲和，对节点1不亲和
-  * 10: 表示容器对节点1亲和，对节点0不亲和
-  * 11: 表示容器对节点0 和 节点 1 都亲和
-
-而Preferred空着NUMANodeAffinity是否生效，如果Preferred等于true，说明NUMANodeAffinity的亲和度是有效的，否则是无效的。
-
 ```Golang
 // TopologyHint is a struct containing the NUMANodeAffinity for a Container
 type TopologyHint struct {
@@ -191,6 +182,17 @@ type TopologyHint struct {
     Preferred bool
 }
 ```
+
+TopologyHint 用来表示容器的numa节点亲和性：
+
+* NUMANodeAffinity: 存储numa节点亲和度，是一个bitmask类型。其含义表示容器更倾向于运行在哪个numa节点上。比如在一个还有2个numa节点的机器上。NUMANodeAffinity共有三种表示方法：
+  * 01: 表示容器对节点0亲和，对节点1不亲和
+  * 10: 表示容器对节点1亲和，对节点0不亲和
+  * 11: 表示容器对节点0 和 节点 1 都亲和
+
+而Preferred标示NUMANodeAffinity是否生效，如果Preferred等于true，说明NUMANodeAffinity的亲和度是有效的，否则是无效的。
+
+
 
 ###### 四种拓扑对齐策略
 
@@ -223,7 +225,7 @@ func (s *containerScope) Admit(pod *v1.Pod) lifecycle.PodAdmitResult {
 }
 ```
 
-如果没有指定拓扑对齐策略(即拓扑对齐策略为none)，则Admit直接返回true。其他三种拓扑对齐策略都需要先执行calculateAffinity()方法计算拓扑亲和性,然后调用allocateAlignedResources方法让HintProvider分配资源。
+首先如果没有指定拓扑对齐策略(即拓扑对齐策略为none)，则Admit直接返回true。其他三种拓扑对齐策略都需要先执行calculateAffinity()方法计算拓扑亲和性,然后调用allocateAlignedResources方法让HintProvider分配资源。
 
 ```Golang
 //calculateAffinity计算拓扑亲和性
@@ -248,7 +250,7 @@ func (s *containerScope) accumulateProvidersHints(pod *v1.Pod, container *v1.Con
 }
 ```
 
-calculateAffinity方法在计算拓扑亲和性时，首先需要获取每个HintProvider给出的拓扑建议。然后对这些建议做一次和合并整合，得出最后的结论。
+calculateAffinity方法在计算拓扑亲和性时，首先需要获取每个HintProvider给出的拓扑建议。然后对这些建议做一次和合整合，得出最后的结论。
 
 * CPU Manager和Device Manager 如何提供 TopologyHint，给出拓扑建议
   
@@ -285,10 +287,11 @@ CPU Manger 给出拓扑建议时，会分两种情况。
 
 *  static policy 中已经存在给定的pod和container的cpu 分配记录
 
-此时cpu manager 会根据记录中cpu cores计算拓扑建议。这种情况一般只会发生在kubelet重启的时候。因为kubelet重启之后，主机上已经存在的pod，也会重新走一次add pod和admint的流程。
+此时cpu manager 会根据已经记录的cpu cores情况，计算拓扑建议。这种情况一般只会发生在kubelet重启的时候。因为kubelet重启之后，kubelet需要从新从api server
+list node上的pod,导致机器上所有分配的pod都会重新走一个add pod的流程，继而也会重走admint的流程。
 *  static policy 不存在给定的pod和container的cpu 分配记录
 
-当cpu manager中不选在分配记录，此时cpu manager就会从现在还没有分配出去的cpu cores中计算出可行的拓扑建议。
+当cpu manager中不选在分配记录时，cpu manager就会从现在还没有分配出去的cpu cores中计算出可行的拓扑建议。
 
 下面结合generateCPUTopologyHints代码，介绍一下CPU Manager是如何计算拓扑建议的。
 
@@ -375,6 +378,7 @@ func (p *staticPolicy) generateCPUTopologyHints(availableCPUs cpuset.CPUSet, reu
 
 Device Manager 计算 拓扑建议的流程和CPU Manger计算拓扑建议的流程大致相似，这里就不做详细介绍。
 
+* 四种拓扑对齐策略的差异
 
 在Topology Manager分别从CPU Manger和Device Manager获取拓扑分配建议之后，然后会对这些建议做合并整理的工作，找到一个最合适的拓扑分配方案。none 拓扑对齐策略前面已经介绍过了，下面介绍剩下三种拓扑对齐策略。
 
