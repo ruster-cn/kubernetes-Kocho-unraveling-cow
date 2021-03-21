@@ -377,9 +377,13 @@ takeByTopology方法接收主机的cpu拓扑结构、可用cpu core和需要分�
 
 takeByTopology在分配cpu时，采用的拓扑感知最佳拟合算法(topology-aware best-fit )默认会选择最优的分配方案:
 
-* 如果,单numa节点的cpu足够分配，则尽量在单numa上完成分配。
-* 否则，按照物理cpu 核心，凑够所需cpu。
-* 否则，按照thread 逻辑核心，凑够所需cpu。
+* 如果容器申请的cpu资源超过了一个numa节点的cpu core 数量，则会优先将一个numa节点分出来
+* 如果申请的cpu资源小于一个numa节点的cpu core 数量，但是大于每个core的线程数,则会优先在numa节点上剩余资源少的numa上分配。如果两个numa节点剩余核数相同，则在numa节点ID更小的节点上分配
+* 以上两种情况都不满足，则按照如下规则选择cpu core：
+  * 要分配的核心所在的numa节点上有更多的以分配cpu core，被分配给了容器，则排名靠前。
+  * 要分配的核心有更少的剩余core，则排名靠前。
+  * numa节点ID更小的节点，排名靠前
+  * core id更小的节点，排名靠前
 
 ### 4. 添加容器: AddContainer() 接口
 
