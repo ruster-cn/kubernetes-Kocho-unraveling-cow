@@ -97,7 +97,7 @@ Device Manager 模块为什么要记录checkpoint文件？主要是在Device Man
 
 ### RPC Server
 
-![Device Manger 与 Device Plugin RPC通信](./image/device-plugin-overview.png)
+![Device Manger 与 Device Plugin RPC通信](./image/8-device-plugin-overview.png)
 
 ```Golang
 service Registration {
